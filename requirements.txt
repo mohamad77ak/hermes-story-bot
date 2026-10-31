@@ -1,0 +1,5 @@
+pillow
+arabic-reshaper
+python-bidi
+jdatetime
+requests
