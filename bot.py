@@ -1,59 +1,58 @@
 #!/usr/bin/env python3
-"""Hermes Gold – استوری خودکار قیمت.
+"""Hermes Gold – استوری خودکار قیمت (روی طرح اختصاصی).
 دستورها:
   python bot.py render [--demo]   ساخت تصویر استوری
   python bot.py publish           انتشار آخرین تصویر ساخته‌شده روی اینستاگرام
 """
 import argparse, json, os, pathlib, sys, time, datetime as dt, zoneinfo
-import requests, jdatetime, arabic_reshaper
-from bidi.algorithm import get_display
+import requests, jdatetime
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = pathlib.Path(__file__).parent
 OUT, ASSETS = ROOT / "out", ROOT / "assets"
 STATE = ROOT / "state" / "last_prices.json"
 TZ = zoneinfo.ZoneInfo("Asia/Tehran")
-FONT_URL = "https://raw.githubusercontent.com/rastikerdar/vazirmatn/master/fonts/ttf/Vazirmatn-{w}.ttf"
 
-# ============ تنظیمات منبع قیمت (بعد از انتخاب منبع ویرایش شود) ============
-# هر مورد: (عنوان روی استوری, مسیر مقدار در JSON با نقطه، مثلا "data.gold18.price" یا "items.0.price")
+# ============ منبع قیمت: Iran Market Data (فایل JSON عمومی، مجوز MIT، داده از TGJU، هر ۳۰ دقیقه) ============
+FEED_URL = os.environ.get("PRICE_API_URL") or "https://raw.githubusercontent.com/iran-market/iran-market.github.io/main/data/latest-toman.json"
+MAX_AGE_MIN = 100   # اگر فایل منبع قدیمی‌تر از این باشد، انتشار متوقف می‌شود
+# کلید ← (نماد در منبع, نوع)؛ نوع "toman" یعنی تومان و "usd" یعنی دلار
 ITEMS = [
-    ("طلای ۱۸ عیار (هر گرم)", "gold18"),
-    ("سکه امامی", "sekke"),
-    ("نیم‌سکه", "nim"),
-    ("ربع‌سکه", "rob"),
-    ("دلار", "usd"),
+    ("gold18",  "GOLD_18K_IRR",     "toman"),   # طلا ۱۸ عیار (گرم)
+    ("emami",   "COIN_EMAMI_IRR",   "toman"),   # سکه امامی
+    ("usd",     "USD_IRR_FREE",     "toman"),   # دلار آمریکا (بازار آزاد)
+    ("mesghal", "GOLD_MESGHAL_IRR", "toman"),   # مثقال طلا
+    ("ounce",   "XAU_USD",          "usd"),     # انس طلای جهانی
 ]
-# اگر منبع شما قیمت را به ریال می‌دهد، PRICE_DIVISOR=10 بگذارید تا تومان شود.
-DEMO = {"طلای ۱۸ عیار (هر گرم)": 7650000, "سکه امامی": 78500000,
-        "نیم‌سکه": 41200000, "ربع‌سکه": 23800000, "دلار": 98500}
+DEMO = {"gold18": 18697000, "emami": 188000000, "usd": 192300, "mesghal": 81000000, "ounce": 4064.78}
 MAX_JUMP = 0.08   # اگر قیمتی نسبت به دفعه قبل بیش از ۸٪ تغییر کند، انتشار متوقف می‌شود
+
+# مختصات روی قالب (۱۰۸۰×۱۹۱۲): (مرکز x, مرکز y, ارتفاع ارقام)
+LAYOUT = {"date": (823.5, 844.5, 38), "time": (367.5, 844.5, 35),
+          "gold18": (723.5, 988, 46), "emami": (723.5, 1150, 46), "usd": (720.5, 1300, 46),
+          "mesghal": (722, 1438.5, 46), "ounce": (718, 1574.5, 46)}
+INK = (26, 21, 16)
 # ===========================================================================
 
-FA = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
-AR = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
-
-def fa_num(n): return f"{n:,}".replace(",", "٬").translate(FA)
-def rtl(s): return get_display(arabic_reshaper.reshape(s))
-
-def to_int(v):
-    if isinstance(v, (int, float)): return int(v)
-    return int(float(str(v).translate(AR).replace(",", "").replace("٬", "").strip()))
-
-def dig(obj, path):
-    for p in path.split("."):
-        obj = obj[int(p)] if isinstance(obj, list) else obj[p]
-    return obj
-
 def fetch_prices():
-    url = os.environ.get("PRICE_API_URL")
-    if not url: sys.exit("PRICE_API_URL تنظیم نشده است.")
-    headers = json.loads(os.environ.get("PRICE_API_HEADERS") or "{}")
-    r = requests.get(url, headers=headers, timeout=30); r.raise_for_status()
-    data, div = r.json(), int(os.environ.get("PRICE_DIVISOR") or 1)
-    return {label: to_int(dig(data, path)) // div for label, path in ITEMS}
+    r = requests.get(FEED_URL, timeout=40, headers={"Cache-Control": "no-cache"}); r.raise_for_status()
+    j = r.json()
+    pub = dt.datetime.fromisoformat(j["meta"]["published_at"].replace("Z", "+00:00")).astimezone(TZ)
+    age = (dt.datetime.now(TZ) - pub).total_seconds() / 60
+    if age > MAX_AGE_MIN: sys.exit(f"داده منبع قدیمی است ({int(age)} دقیقه) – انتشار لغو شد.")
+    idx = {row["symbol"]: row for rows in j["data"]["categories"].values() for row in rows}
+    out = {}
+    for key, sym, kind in ITEMS:
+        row = idx.get(sym)
+        if not row or row.get("price") is None: sys.exit(f"نماد {sym} در منبع پیدا نشد.")
+        if row.get("currency") != ("USD" if kind == "usd" else "IRT"): sys.exit(f"واحد {sym} غیرمنتظره است.")
+        if kind == "toman" and row.get("stale"): sys.exit(f"قیمت {sym} کهنه است – انتشار لغو شد.")
+        v = float(row["price"])
+        out[key] = round(v, 2) if kind == "usd" else int(round(v))
+    return out, pub
 
 def sanity(prices):
+    if set(prices) != set(k for k, _, _ in ITEMS): sys.exit("همهٔ قیمت‌ها دریافت نشد.")
     if any(v <= 0 for v in prices.values()): sys.exit("قیمت نامعتبر (صفر یا منفی) – انتشار لغو شد.")
     if STATE.exists():
         last = json.loads(STATE.read_text())
@@ -61,55 +60,40 @@ def sanity(prices):
             if k in last and last[k] and abs(v - last[k]) / last[k] > MAX_JUMP:
                 sys.exit(f"تغییر مشکوک در «{k}»: {last[k]} → {v}. انتشار لغو شد.")
 
-def font(w, size):
-    ASSETS.mkdir(exist_ok=True)
-    p = ASSETS / f"Vazirmatn-{w}.ttf"
-    if not p.exists():
-        p.write_bytes(requests.get(FONT_URL.format(w=w), timeout=60).content)
-    return ImageFont.truetype(str(p), size, layout_engine=ImageFont.Layout.BASIC)
+def fit_font(target_h):
+    p = str(ASSETS / "BarlowCondensed-Bold.ttf")
+    lo, hi = 20, 120
+    while lo < hi:                      # اندازه‌ای که ارتفاع رقم دقیقاً برابر هدف شود
+        mid = (lo + hi) // 2
+        b = ImageFont.truetype(p, mid).getbbox("0")
+        if b[3] - b[1] < target_h: lo = mid + 1
+        else: hi = mid
+    return ImageFont.truetype(p, lo)
 
 def render(prices, now):
-    W, H = 1080, 1920
-    img = Image.new("RGB", (W, H), "#0B1020")
+    import numpy as np
+    img = Image.open(ASSETS / "template.jpg").convert("RGB")
     d = ImageDraw.Draw(img)
-    for y in range(H):  # گرادیان ملایم
-        t = y / H; c = (int(11 + 14 * t), int(16 + 12 * t), int(32 + 22 * t))
-        d.line([(0, y), (W, y)], fill=c)
-    GOLD, SOFT = "#D4AF37", "#E9E4D0"
-    def right(s, y, f, fill, x=W - 90): d.text((x - d.textlength(rtl(s), font=f), y), rtl(s), font=f, fill=fill)
-    def center(s, y, f, fill): d.text(((W - d.textlength(rtl(s), font=f)) / 2, y), rtl(s), font=f, fill=fill)
-
-    center("هرمس گلد", 150, font("Bold", 110), GOLD)
-    d.line([(390, 300), (690, 300)], fill=GOLD, width=3)
-    center("قیمت لحظه‌ای طلا و ارز", 340, font("Bold", 60), SOFT)
     j = jdatetime.datetime.fromgregorian(datetime=now)
-    center(f"{j.strftime('%Y/%m/%d')}  |  ساعت {j.strftime('%H:%M')}".translate(FA), 430, font("Regular", 44), "#9FA6BD")
-
-    n = len(prices); card_h, gap = 170, 36
-    y0 = 600
-    fl, fp, fu = font("Bold", 52), font("Bold", 66), font("Regular", 34)
-    for i, (label, val) in enumerate(prices.items()):
-        y = y0 + i * (card_h + gap)
-        d.rounded_rectangle([70, y, W - 70, y + card_h], radius=36, fill="#141B33", outline="#2A3558", width=2)
-        d.rounded_rectangle([W - 76, y + 30, W - 70, y + card_h - 30], radius=3, fill=GOLD)
-        right(label, y + 50, fl, SOFT, x=W - 110)
-        num = fa_num(val)
-        d.text((120, y + 40), num, font=fp, fill=GOLD)
-        d.text((120 + d.textlength(num, font=fp) + 16, y + 78), rtl("تومان"), font=fu, fill="#9FA6BD")
-
-    center("ظرافت، کیفیت و اصالت در کنار هم", H - 260, font("Regular", 40), SOFT)
-    center("@hermes_goold", H - 190, font("Bold", 48), GOLD)
-    center("قیمت‌ها جهت اطلاع‌رسانی است", H - 120, font("Regular", 30), "#6F7893")
-    return img
+    texts = {"date": j.strftime("%Y/%m/%d"), "time": j.strftime("%H:%M")}
+    for key, _, kind in ITEMS:
+        texts[key] = f"{prices[key]:,.2f}" if kind == "usd" else f"{int(prices[key]):,}"
+    for key, (cx, cy, h) in LAYOUT.items():
+        f = fit_font(h)
+        b = d.textbbox((0, 0), texts[key], font=f)
+        d.text((cx - (b[0] + b[2]) / 2, cy - (b[1] + b[3]) / 2), texts[key], font=f, fill=INK)
+    arr = np.pad(np.array(img), ((4, 4), (0, 0), (0, 0)), mode="edge")   # ۱۹۱۲ → ۱۹۲۰ (نسبت ۹:۱۶)
+    return Image.fromarray(arr)
 
 def cmd_render(demo):
     now = dt.datetime.now(TZ)
-    prices = DEMO if demo else fetch_prices()
-    if not demo: sanity(prices)
+    if demo: prices, as_of = DEMO, now
+    else:
+        prices, as_of = fetch_prices(); sanity(prices)
     OUT.mkdir(exist_ok=True)
     for old in OUT.glob("story_*.jpg"): old.unlink()
     name = f"story_{now:%Y%m%d_%H%M}.jpg"
-    render(prices, now).save(OUT / name, "JPEG", quality=92)
+    render(prices, as_of).save(OUT / name, "JPEG", quality=92)
     (OUT / "latest.txt").write_text(name)
     if not demo:
         STATE.parent.mkdir(exist_ok=True); STATE.write_text(json.dumps(prices, ensure_ascii=False))
