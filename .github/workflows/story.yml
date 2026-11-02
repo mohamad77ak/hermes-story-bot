@@ -1,0 +1,42 @@
+name: Hermes Story
+on:
+  schedule:
+    - cron: "10 8 * * *"
+    - cron: "10 14 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true = only build image, false = publish story"
+        default: "true"
+permissions:
+  contents: write
+concurrency:
+  group: story
+  cancel-in-progress: false
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    env:
+      COMPOSIO_API_KEY: ${{ secrets.COMPOSIO_API_KEY }}
+      COMPOSIO_CONNECTED_ACCOUNT_ID: ${{ secrets.COMPOSIO_CONNECTED_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - name: Build image
+        run: python bot.py render
+      - uses: actions/upload-artifact@v4
+        with: { name: story-preview, path: out/*.jpg }
+      - name: Save image to repo
+        if: ${{ inputs.dry_run != 'true' }}
+        run: |
+          git config user.name "story-bot"
+          git config user.email "story-bot@users.noreply.github.com"
+          git add -A out state
+          git commit -m "story $(date -u +%F-%H%M)" || exit 0
+          git pull --rebase
+          git push
+      - name: Publish story
+        if: ${{ inputs.dry_run != 'true' }}
+        run: python bot.py publish
