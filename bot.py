@@ -99,21 +99,62 @@ def cmd_render(demo):
         STATE.parent.mkdir(exist_ok=True); STATE.write_text(json.dumps(prices, ensure_ascii=False))
     print("ساخته شد:", name)
 
-def composio(slug, arguments):
-    body = {"arguments": arguments}
-    if os.environ.get("COMPOSIO_CONNECTED_ACCOUNT_ID"): body["connected_account_id"] = os.environ["COMPOSIO_CONNECTED_ACCOUNT_ID"]
-    if os.environ.get("COMPOSIO_USER_ID"): body["user_id"] = os.environ["COMPOSIO_USER_ID"]
-    r = requests.post(f"https://backend.composio.dev/api/v3/tools/execute/{slug}",
-                      headers={"x-api-key": os.environ["COMPOSIO_API_KEY"], "Content-Type": "application/json"},
-                      json=body, timeout=180)
-    if r.status_code >= 400: sys.exit(f"{slug} → HTTP {r.status_code}: {r.text[:500]}")
-    j = r.json()
-    if j.get("successful") is False: sys.exit(f"{slug} ناموفق: {j.get('error')}")
-    return j.get("data") or {}
+MCP_URL = "https://connect.composio.dev/mcp"
+
+class Composio:
+    """اتصال به Composio Connect (همان اتصال چت) با کلید ck_ از طریق MCP."""
+    def __init__(self, key):
+        self.h = {"x-consumer-api-key": key, "Content-Type": "application/json",
+                  "Accept": "application/json, text/event-stream"}
+        self.sid, self.n, self.session = None, 0, None
+        self._rpc("initialize", {"protocolVersion": "2025-03-26", "capabilities": {},
+                                 "clientInfo": {"name": "hermes-story-bot", "version": "1.0"}})
+        self._post({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    def _post(self, body):
+        h = dict(self.h)
+        if self.sid: h["Mcp-Session-Id"] = self.sid
+        r = requests.post(MCP_URL, headers=h, json=body, timeout=180)
+        if r.status_code >= 400: sys.exit(f"Composio → HTTP {r.status_code}: {r.text[:400]}")
+        if r.headers.get("Mcp-Session-Id"): self.sid = r.headers["Mcp-Session-Id"]
+        return r
+
+    def _rpc(self, method, params):
+        self.n += 1
+        r = self._post({"jsonrpc": "2.0", "id": self.n, "method": method, "params": params})
+        if "text/event-stream" in r.headers.get("Content-Type", ""):
+            msgs = [json.loads(l[5:].strip()) for l in r.text.splitlines() if l.startswith("data:") and l[5:].strip()]
+        else:
+            msgs = [r.json()] if r.text.strip() else []
+        msg = next((m for m in msgs if m.get("id") == self.n), msgs[-1] if msgs else {})
+        if "error" in msg: sys.exit(f"Composio خطا: {msg['error']}")
+        return msg.get("result", {})
+
+    def tool(self, name, args):
+        res = self._rpc("tools/call", {"name": name, "arguments": args})
+        text = "".join(c.get("text", "") for c in res.get("content", []) if c.get("type") == "text")
+        if res.get("isError"): sys.exit(f"{name} خطا: {text[:500]}")
+        try: return json.loads(text)
+        except ValueError: sys.exit(f"پاسخ نامعتبر از {name}: {text[:300]}")
+
+    def run(self, slug, arguments):
+        if not self.session:
+            out = self.tool("COMPOSIO_SEARCH_TOOLS", {"queries": [{"use_case": "publish an Instagram story",
+                            "known_fields": "toolkit:instagram"}], "session": {"generate_id": True}})
+            self.session = (out.get("data") or {}).get("session", {}).get("id")
+            if not self.session: sys.exit(f"شناسه نشست دریافت نشد: {str(out)[:300]}")
+        out = self.tool("COMPOSIO_MULTI_EXECUTE_TOOL", {"tools": [{"tool_slug": slug, "arguments": arguments}],
+                        "session_id": self.session, "sync_response_to_workbench": False,
+                        "thought": "Publish daily price story for the shop.", "current_step": "PUBLISH_STORY"})
+        results = (out.get("data") or {}).get("results") or []
+        if not results: sys.exit(f"{slug}: پاسخی نیامد: {str(out)[:400]}")
+        resp = results[0].get("response") or {}
+        if not resp.get("successful"): sys.exit(f"{slug} ناموفق: {str(resp.get('error') or resp)[:500]}")
+        return resp.get("data") or {}
 
 def find_id(d):
     if isinstance(d, dict):
-        if "id" in d: return d["id"]
+        if d.get("id"): return d["id"]
         for v in d.values():
             x = find_id(v)
             if x: return x
@@ -127,10 +168,11 @@ def cmd_publish():
         except requests.RequestException: pass
         time.sleep(5)
     else: sys.exit("تصویر روی لینک عمومی در دسترس نشد.")
+    c = Composio(os.environ["COMPOSIO_API_KEY"])
     uid = os.environ.get("IG_USER_ID", "me")
-    cid = find_id(composio("INSTAGRAM_POST_IG_USER_MEDIA", {"ig_user_id": uid, "media_type": "STORIES", "image_url": url}))
+    cid = find_id(c.run("INSTAGRAM_POST_IG_USER_MEDIA", {"ig_user_id": uid, "media_type": "STORIES", "image_url": url}))
     if not cid: sys.exit("شناسه کانتینر دریافت نشد.")
-    mid = find_id(composio("INSTAGRAM_POST_IG_USER_MEDIA_PUBLISH", {"ig_user_id": uid, "creation_id": str(cid)}))
+    mid = find_id(c.run("INSTAGRAM_POST_IG_USER_MEDIA_PUBLISH", {"ig_user_id": uid, "creation_id": str(cid)}))
     print("استوری منتشر شد. media_id =", mid)
 
 if __name__ == "__main__":
