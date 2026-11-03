@@ -175,7 +175,37 @@ def cmd_publish():
     mid = find_id(c.run("INSTAGRAM_POST_IG_USER_MEDIA_PUBLISH", {"ig_user_id": uid, "creation_id": str(cid)}))
     print("استوری منتشر شد. media_id =", mid)
 
+# ---- قفل ساعت و جلوگیری از انتشار تکراری ----
+SLOTS = [("noon", (11, 55), (13, 45)), ("evening", (17, 55), (19, 45))]   # بازهٔ مجاز به وقت تهران
+SLOT_STATE = ROOT / "state" / "last_slots.txt"
+
+def _emit(go, slot=""):
+    line = f"go={'true' if go else 'false'}\nslot={slot}\n"
+    if os.environ.get("GITHUB_OUTPUT"):
+        with open(os.environ["GITHUB_OUTPUT"], "a") as f: f.write(line)
+    print(line.replace("\n", " | "))
+
+def cmd_gate():
+    now = dt.datetime.now(TZ)
+    if os.environ.get("EVENT_NAME") != "schedule":      # اجرای دستی همیشه مجاز است
+        return _emit(True, "manual")
+    mins = now.hour * 60 + now.minute
+    for name, (h1, m1), (h2, m2) in SLOTS:
+        if h1 * 60 + m1 <= mins < h2 * 60 + m2:
+            slot = f"{now:%Y-%m-%d}-{name}"
+            done = SLOT_STATE.read_text().split() if SLOT_STATE.exists() else []
+            if slot in done:
+                print("استوری این بازه قبلاً منتشر شده؛ رد شد."); return _emit(False)
+            return _emit(True, slot)
+    print(f"ساعت {now:%H:%M} تهران خارج از بازهٔ مجاز است؛ استوری منتشر نمی‌شود."); _emit(False)
+
+def cmd_mark(slot):
+    if not slot or slot == "manual": return
+    SLOT_STATE.parent.mkdir(exist_ok=True)
+    done = SLOT_STATE.read_text().split()[-20:] if SLOT_STATE.exists() else []
+    SLOT_STATE.write_text("\n".join(done + [slot]) + "\n")
+
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(); ap.add_argument("cmd", choices=["render", "publish"]); ap.add_argument("--demo", action="store_true")
+    ap = argparse.ArgumentParser(); ap.add_argument("cmd", choices=["render", "publish", "gate", "mark"]); ap.add_argument("--demo", action="store_true"); ap.add_argument("--slot", default="")
     a = ap.parse_args()
-    cmd_render(a.demo) if a.cmd == "render" else cmd_publish()
+    {"render": lambda: cmd_render(a.demo), "publish": cmd_publish, "gate": cmd_gate, "mark": lambda: cmd_mark(a.slot)}[a.cmd]()
