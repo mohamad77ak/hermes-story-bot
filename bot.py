@@ -35,10 +35,13 @@ INK = (26, 21, 16)
 # ===========================================================================
 
 def fetch_prices():
-    r = requests.get(FEED_URL, timeout=40, headers={"Cache-Control": "no-cache"}); r.raise_for_status()
-    j = r.json()
-    pub = dt.datetime.fromisoformat(j["meta"]["published_at"].replace("Z", "+00:00")).astimezone(TZ)
-    age = (dt.datetime.now(TZ) - pub).total_seconds() / 60
+    for attempt in range(7):   # اگر درست لحظهٔ ساعت گرد اجرا شد، تا ۹۰ ثانیه برای قیمت‌های تازه صبر می‌کند
+        r = requests.get(FEED_URL, timeout=40, headers={"Cache-Control": "no-cache"}); r.raise_for_status()
+        j = r.json()
+        pub = dt.datetime.fromisoformat(j["meta"]["published_at"].replace("Z", "+00:00")).astimezone(TZ)
+        age = (dt.datetime.now(TZ) - pub).total_seconds() / 60
+        if age <= 28 or attempt == 6: break
+        time.sleep(15)
     if age > MAX_AGE_MIN: sys.exit(f"داده منبع قدیمی است ({int(age)} دقیقه) – انتشار لغو شد.")
     idx = {row["symbol"]: row for rows in j["data"]["categories"].values() for row in rows}
     out = {}

@@ -1,12 +1,14 @@
 name: Hermes Story
 on:
   schedule:
-    - cron: "32 8 * * *"
-    - cron: "2 9 * * *"
-    - cron: "32 9 * * *"
-    - cron: "32 14 * * *"
-    - cron: "2 15 * * *"
-    - cron: "32 15 * * *"
+    - cron: "0 12 * * *"
+      timezone: "Asia/Tehran"
+    - cron: "30 12 * * *"
+      timezone: "Asia/Tehran"
+    - cron: "0 18 * * *"
+      timezone: "Asia/Tehran"
+    - cron: "30 18 * * *"
+      timezone: "Asia/Tehran"
   workflow_dispatch:
     inputs:
       dry_run:
