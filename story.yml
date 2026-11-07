@@ -14,6 +14,9 @@ on:
       dry_run:
         description: "true = only build image, false = publish story"
         default: "true"
+      auto:
+        description: "true = called by the timer service (time window check on)"
+        default: "false"
 permissions:
   contents: write
 concurrency:
@@ -25,6 +28,7 @@ jobs:
     env:
       COMPOSIO_API_KEY: ${{ secrets.COMPOSIO_API_KEY }}
       EVENT_NAME: ${{ github.event_name }}
+      AUTO: ${{ inputs.auto }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
