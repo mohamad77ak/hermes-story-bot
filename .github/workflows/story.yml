@@ -1,13 +1,22 @@
 name: Hermes Story
 on:
   schedule:
-    - cron: "32 8 * * *"
-    - cron: "32 14 * * *"
+    - cron: "0 12 * * *"
+      timezone: "Asia/Tehran"
+    - cron: "30 12 * * *"
+      timezone: "Asia/Tehran"
+    - cron: "0 18 * * *"
+      timezone: "Asia/Tehran"
+    - cron: "30 18 * * *"
+      timezone: "Asia/Tehran"
   workflow_dispatch:
     inputs:
       dry_run:
         description: "true = only build image, false = publish story"
         default: "true"
+      auto:
+        description: "true = called by the timer service (time window check on)"
+        default: "false"
 permissions:
   contents: write
 concurrency:
@@ -18,18 +27,24 @@ jobs:
     runs-on: ubuntu-latest
     env:
       COMPOSIO_API_KEY: ${{ secrets.COMPOSIO_API_KEY }}
-      COMPOSIO_CONNECTED_ACCOUNT_ID: ${{ secrets.COMPOSIO_CONNECTED_ACCOUNT_ID }}
+      EVENT_NAME: ${{ github.event_name }}
+      AUTO: ${{ inputs.auto }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install -r requirements.txt
+      - name: Check time window
+        id: gate
+        run: python bot.py gate
       - name: Build image
+        if: steps.gate.outputs.go == 'true'
         run: python bot.py render
       - uses: actions/upload-artifact@v4
+        if: steps.gate.outputs.go == 'true'
         with: { name: story-preview, path: out/*.jpg }
       - name: Save image to repo
-        if: ${{ inputs.dry_run != 'true' }}
+        if: steps.gate.outputs.go == 'true' && inputs.dry_run != 'true'
         run: |
           git config user.name "story-bot"
           git config user.email "story-bot@users.noreply.github.com"
@@ -38,5 +53,15 @@ jobs:
           git pull --rebase
           git push
       - name: Publish story
-        if: ${{ inputs.dry_run != 'true' }}
+        if: steps.gate.outputs.go == 'true' && inputs.dry_run != 'true'
         run: python bot.py publish
+      - name: Remember this slot
+        if: steps.gate.outputs.go == 'true' && inputs.dry_run != 'true'
+        run: |
+          python bot.py mark --slot "${{ steps.gate.outputs.slot }}"
+          git config user.name "story-bot"
+          git config user.email "story-bot@users.noreply.github.com"
+          git add -A state
+          git commit -m "slot ${{ steps.gate.outputs.slot }}" || exit 0
+          git pull --rebase
+          git push
