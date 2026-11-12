@@ -190,7 +190,7 @@ def _emit(go, slot=""):
 
 def cmd_gate():
     now = dt.datetime.now(TZ)
-    if os.environ.get("EVENT_NAME") != "schedule":      # اجرای دستی همیشه مجاز است
+    if os.environ.get("EVENT_NAME") != "schedule" and os.environ.get("AUTO") != "true":      # اجرای دستی همیشه مجاز است
         return _emit(True, "manual")
     mins = now.hour * 60 + now.minute
     for name, (h1, m1), (h2, m2) in SLOTS:
